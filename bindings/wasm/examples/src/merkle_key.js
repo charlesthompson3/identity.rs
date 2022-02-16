@@ -1,4 +1,4 @@
-// Copyright 2020-2021 IOTA Stiftung
+// Copyright 2020-2022 IOTA Stiftung
 // SPDX-License-Identifier: Apache-2.0
 
 import {
@@ -15,7 +15,6 @@ import {
     VerifierOptions
 } from '@iota/identity-wasm';
 import {createIdentity} from './create_did';
-import {logExplorerUrl} from './utils';
 
 /**
  This example shows how to sign/revoke verifiable credentials on scale.
@@ -45,12 +44,12 @@ async function merkleKey(clientConfig) {
     issuer.doc.insertMethod(method, MethodScope.VerificationMethod());
     issuer.doc.metadataPreviousMessageId = issuer.receipt.messageId;
     issuer.doc.metadataUpdated = Timestamp.nowUTC();
-    issuer.doc.signSelf(issuer.key, issuer.doc.defaultSigningMethod().id.toString());
+    issuer.doc.signSelf(issuer.key, issuer.doc.defaultSigningMethod().id);
 
     // Publish the Identity to the IOTA Network and log the results.
     // This may take a few seconds to complete proof-of-work.
     const receipt = await client.publishDocument(issuer.doc);
-    logExplorerUrl("Identity Update:", clientConfig.explorer, receipt.messageId);
+    console.log(`Identity Update: ${clientConfig.explorer.messageUrl(receipt.messageId)}`);
 
     // Prepare a credential subject indicating the degree earned by Alice
     let credentialSubject = {
@@ -86,9 +85,9 @@ async function merkleKey(clientConfig) {
     issuer.doc.revokeMerkleKey(method.id.toString(), 0);
     issuer.doc.metadataPreviousMessageId = receipt.messageId;
     issuer.doc.metadataUpdated = Timestamp.nowUTC();
-    issuer.doc.signSelf(issuer.key, issuer.doc.defaultSigningMethod().id.toString());
+    issuer.doc.signSelf(issuer.key, issuer.doc.defaultSigningMethod().id);
     const nextReceipt = await client.publishDocument(issuer.doc);
-    logExplorerUrl("Identity Update:", clientConfig.explorer, nextReceipt.messageId);
+    console.log(`Identity Update: ${clientConfig.explorer.messageUrl(nextReceipt.messageId)}`);
 
     // Check the verifiable credential is revoked
     const newResult = await client.checkCredential(signedVc.toString(), VerifierOptions.default());

@@ -1,4 +1,4 @@
-// Copyright 2020-2021 IOTA Stiftung
+// Copyright 2020-2022 IOTA Stiftung
 // SPDX-License-Identifier: Apache-2.0
 
 use core::convert::TryInto as _;
@@ -7,10 +7,30 @@ use core::fmt::Formatter;
 
 use serde::Serialize;
 
+use identity_core::common::BitSet;
 use identity_core::common::Object;
+use identity_core::common::OneOrSet;
+use identity_core::common::OrderedSet;
+use identity_core::common::Timestamp;
 use identity_core::common::Url;
 use identity_core::convert::FmtJson;
+use identity_core::crypto::merkle_key::Blake2b256;
+use identity_core::crypto::merkle_key::MerkleDigest;
+use identity_core::crypto::merkle_key::MerkleDigestTag;
+use identity_core::crypto::merkle_key::MerkleKey;
+use identity_core::crypto::merkle_key::MerkleSignature;
+use identity_core::crypto::merkle_key::MerkleSignatureTag;
+use identity_core::crypto::merkle_key::MerkleVerifier;
+use identity_core::crypto::merkle_key::Sha256;
+use identity_core::crypto::merkle_key::VerificationKey;
+use identity_core::crypto::Ed25519;
+use identity_core::crypto::JcsEd25519;
 use identity_core::crypto::PrivateKey;
+use identity_core::crypto::ProofPurpose;
+use identity_core::crypto::Signature;
+use identity_core::crypto::TrySignature;
+use identity_core::crypto::Verifier;
+use identity_core::crypto::Verify;
 
 use crate::did::CoreDID;
 use crate::did::CoreDIDUrl;
@@ -18,13 +38,15 @@ use crate::document::DocumentBuilder;
 use crate::error::Error;
 use crate::error::Result;
 use crate::service::Service;
-use crate::utils::OrderedSet;
+use crate::utils::DIDUrlQuery;
+use crate::utils::Queryable;
 use crate::verifiable::DocumentSigner;
-use crate::verifiable::DocumentVerifier;
-use crate::verification::MethodQuery;
+use crate::verifiable::Revocation;
+use crate::verifiable::VerifierOptions;
 use crate::verification::MethodRef;
 use crate::verification::MethodRelationship;
 use crate::verification::MethodScope;
+use crate::verification::MethodType;
 use crate::verification::MethodUriType;
 use crate::verification::TryMethod;
 use crate::verification::VerificationMethod;
@@ -37,9 +59,9 @@ use crate::verification::VerificationMethod;
 pub struct CoreDocument<T = Object, U = Object, V = Object> {
   pub(crate) id: CoreDID,
   #[serde(skip_serializing_if = "Option::is_none")]
-  pub(crate) controller: Option<CoreDID>,
-  #[serde(default = "Default::default", rename = "alsoKnownAs", skip_serializing_if = "Vec::is_empty")]
-  pub(crate) also_known_as: Vec<Url>,
+  pub(crate) controller: Option<OneOrSet<CoreDID>>,
+  #[serde(default = "Default::default", rename = "alsoKnownAs", skip_serializing_if = "OrderedSet::is_empty")]
+  pub(crate) also_known_as: OrderedSet<Url>,
   #[serde(default = "Default::default", rename = "verificationMethod", skip_serializing_if = "OrderedSet::is_empty")]
   pub(crate) verification_method: OrderedSet<VerificationMethod<U>>,
   #[serde(default = "Default::default", skip_serializing_if = "OrderedSet::is_empty")]
@@ -70,8 +92,11 @@ impl<T, U, V> CoreDocument<T, U, V> {
   pub fn from_builder(builder: DocumentBuilder<T, U, V>) -> Result<Self> {
     Ok(Self {
       id: builder.id.ok_or(Error::BuilderInvalidDocumentId)?,
-      controller: builder.controller,
-      also_known_as: builder.also_known_as,
+      controller: Some(builder.controller)
+        .filter(|controllers| !controllers.is_empty())
+        .map(TryFrom::try_from)
+        .transpose()?,
+      also_known_as: builder.also_known_as.try_into()?,
       verification_method: builder.verification_method.try_into()?,
       authentication: builder.authentication.try_into()?,
       assertion_method: builder.assertion_method.try_into()?,
@@ -94,22 +119,22 @@ impl<T, U, V> CoreDocument<T, U, V> {
   }
 
   /// Returns a reference to the `CoreDocument` controller.
-  pub fn controller(&self) -> Option<&CoreDID> {
+  pub fn controller(&self) -> Option<&OneOrSet<CoreDID>> {
     self.controller.as_ref()
   }
 
   /// Returns a mutable reference to the `CoreDocument` controller.
-  pub fn controller_mut(&mut self) -> Option<&mut CoreDID> {
-    self.controller.as_mut()
+  pub fn controller_mut(&mut self) -> &mut Option<OneOrSet<CoreDID>> {
+    &mut self.controller
   }
 
   /// Returns a reference to the `CoreDocument` alsoKnownAs set.
-  pub fn also_known_as(&self) -> &[Url] {
+  pub fn also_known_as(&self) -> &OrderedSet<Url> {
     &self.also_known_as
   }
 
   /// Returns a mutable reference to the `CoreDocument` alsoKnownAs set.
-  pub fn also_known_as_mut(&mut self) -> &mut Vec<Url> {
+  pub fn also_known_as_mut(&mut self) -> &mut OrderedSet<Url> {
     &mut self.also_known_as
   }
 
@@ -306,9 +331,9 @@ impl<T, U, V> CoreDocument<T, U, V> {
     relationship: MethodRelationship,
   ) -> Result<bool>
   where
-    Q: Into<MethodQuery<'query>>,
+    Q: Into<DIDUrlQuery<'query>>,
   {
-    let method_query: MethodQuery<'query> = method_query.into();
+    let method_query: DIDUrlQuery<'query> = method_query.into();
 
     match self.resolve_method_with_scope(method_query.clone(), MethodScope::VerificationMethod) {
       None => match self.resolve_method(method_query) {
@@ -343,9 +368,9 @@ impl<T, U, V> CoreDocument<T, U, V> {
     relationship: MethodRelationship,
   ) -> Result<bool>
   where
-    Q: Into<MethodQuery<'query>>,
+    Q: Into<DIDUrlQuery<'query>>,
   {
-    let method_query: MethodQuery<'query> = method_query.into();
+    let method_query: DIDUrlQuery<'query> = method_query.into();
     match self.resolve_method_with_scope(method_query.clone(), MethodScope::VerificationMethod) {
       None => match self.resolve_method(method_query) {
         Some(_) => Err(Error::InvalidMethodEmbedded),
@@ -404,7 +429,7 @@ impl<T, U, V> CoreDocument<T, U, V> {
   /// Returns the first [`VerificationMethod`] with an `id` property matching the provided `query`.
   pub fn resolve_method<'query, Q>(&self, query: Q) -> Option<&VerificationMethod<U>>
   where
-    Q: Into<MethodQuery<'query>>,
+    Q: Into<DIDUrlQuery<'query>>,
   {
     self.resolve_method_inner(query.into())
   }
@@ -416,7 +441,7 @@ impl<T, U, V> CoreDocument<T, U, V> {
   /// Fails if no matching method is found.
   pub fn try_resolve_method<'query, Q>(&self, query: Q) -> Result<&VerificationMethod<U>>
   where
-    Q: Into<MethodQuery<'query>>,
+    Q: Into<DIDUrlQuery<'query>>,
   {
     self.resolve_method_inner(query.into()).ok_or(Error::MethodNotFound)
   }
@@ -429,7 +454,7 @@ impl<T, U, V> CoreDocument<T, U, V> {
     scope: MethodScope,
   ) -> Option<&VerificationMethod<U>>
   where
-    Q: Into<MethodQuery<'query>>,
+    Q: Into<DIDUrlQuery<'query>>,
   {
     let resolve_ref_helper = |method_ref: &'me MethodRef<U>| self.resolve_method_ref(method_ref);
 
@@ -467,7 +492,7 @@ impl<T, U, V> CoreDocument<T, U, V> {
     scope: MethodScope,
   ) -> Result<&VerificationMethod<U>>
   where
-    Q: Into<MethodQuery<'query>>,
+    Q: Into<DIDUrlQuery<'query>>,
   {
     self
       .resolve_method_with_scope(query, scope)
@@ -478,7 +503,7 @@ impl<T, U, V> CoreDocument<T, U, V> {
   /// matching the provided `query`.
   pub fn resolve_method_mut<'query, Q>(&mut self, query: Q) -> Option<&mut VerificationMethod<U>>
   where
-    Q: Into<MethodQuery<'query>>,
+    Q: Into<DIDUrlQuery<'query>>,
   {
     self.resolve_method_mut_inner(query.into())
   }
@@ -491,7 +516,7 @@ impl<T, U, V> CoreDocument<T, U, V> {
   /// Fails if no matching [`VerificationMethod`] is found.
   pub fn try_resolve_method_mut<'query, Q>(&mut self, query: Q) -> Result<&mut VerificationMethod<U>>
   where
-    Q: Into<MethodQuery<'query>>,
+    Q: Into<DIDUrlQuery<'query>>,
   {
     self.resolve_method_mut_inner(query.into()).ok_or(Error::MethodNotFound)
   }
@@ -504,7 +529,7 @@ impl<T, U, V> CoreDocument<T, U, V> {
     }
   }
 
-  fn resolve_method_inner(&self, query: MethodQuery<'_>) -> Option<&VerificationMethod<U>> {
+  fn resolve_method_inner(&self, query: DIDUrlQuery<'_>) -> Option<&VerificationMethod<U>> {
     let mut method: Option<&MethodRef<U>> = None;
 
     if method.is_none() {
@@ -534,7 +559,7 @@ impl<T, U, V> CoreDocument<T, U, V> {
     }
   }
 
-  fn resolve_method_mut_inner(&mut self, query: MethodQuery<'_>) -> Option<&mut VerificationMethod<U>> {
+  fn resolve_method_mut_inner(&mut self, query: DIDUrlQuery<'_>) -> Option<&mut VerificationMethod<U>> {
     let mut method: Option<&mut MethodRef<U>> = None;
 
     if method.is_none() {
@@ -565,6 +590,125 @@ impl<T, U, V> CoreDocument<T, U, V> {
   }
 }
 
+impl<T, U: Revocation, V> CoreDocument<T, U, V> {
+  /// Verifies the signature of the provided data.
+  ///
+  /// # Errors
+  ///
+  /// Fails if an unsupported verification method is used, data
+  /// serialization fails, or the verification operation fails.
+  pub fn verify_data<X>(&self, data: &X, options: &VerifierOptions) -> Result<()>
+  where
+    X: Serialize + TrySignature,
+  {
+    let signature: &Signature = data
+      .try_signature()
+      .map_err(|_| Error::InvalidSignature("missing signature"))?;
+
+    // Retrieve the method used to create the signature and check it has the required verification
+    // method relationship (purpose takes precedence over method_scope).
+    let purpose_scope = options.purpose.map(|purpose| match purpose {
+      ProofPurpose::AssertionMethod => MethodScope::assertion_method(),
+      ProofPurpose::Authentication => MethodScope::authentication(),
+    });
+    let method: &VerificationMethod<U> = match (purpose_scope, options.method_scope) {
+      (Some(purpose_scope), _) => self
+        .try_resolve_method_with_scope(signature, purpose_scope)
+        .map_err(|_| Error::InvalidSignature("method with purpose scope not found"))?,
+      (None, Some(scope)) => self
+        .try_resolve_method_with_scope(signature, scope)
+        .map_err(|_| Error::InvalidSignature("method with specified scope not found"))?,
+      (None, None) => self
+        .try_resolve_method(signature)
+        .map_err(|_| Error::InvalidSignature("method not found"))?,
+    };
+
+    // Check method type.
+    if let Some(ref method_types) = options.method_type {
+      if !method_types.is_empty() && !method_types.contains(&method.key_type) {
+        return Err(Error::InvalidSignature("invalid method type"));
+      }
+    }
+
+    // Check challenge.
+    if options.challenge.is_some() && options.challenge != signature.challenge {
+      return Err(Error::InvalidSignature("invalid challenge"));
+    }
+
+    // Check domain.
+    if options.domain.is_some() && options.domain != signature.domain {
+      return Err(Error::InvalidSignature("invalid domain"));
+    }
+
+    // Check purpose.
+    if options.purpose.is_some() && options.purpose != signature.purpose {
+      return Err(Error::InvalidSignature("invalid purpose"));
+    }
+
+    // Check expired.
+    if let Some(expires) = signature.expires {
+      if !options.allow_expired.unwrap_or(false) && Timestamp::now_utc() > expires {
+        return Err(Error::InvalidSignature("expired"));
+      }
+    }
+
+    // Check signature.
+    Self::do_verify(method, data)
+  }
+
+  /// Verifies the signature of the provided data matches the public key data from the given
+  /// verification method.
+  ///
+  /// # Errors
+  ///
+  /// Fails if an unsupported verification method is used, data
+  /// serialization fails, or the verification operation fails.
+  fn do_verify<X>(method: &VerificationMethod<U>, data: &X) -> Result<()>
+  where
+    X: Serialize + TrySignature,
+  {
+    let public_key: Vec<u8> = method.key_data().try_decode()?;
+
+    match method.key_type() {
+      MethodType::Ed25519VerificationKey2018 => {
+        JcsEd25519::<Ed25519>::verify_signature(data, &public_key)?;
+      }
+      MethodType::MerkleKeyCollection2021 => match MerkleKey::extract_tags(&public_key)? {
+        (MerkleSignatureTag::ED25519, MerkleDigestTag::SHA256) => {
+          merkle_key_verify::<X, Sha256, Ed25519, U>(data, method, &public_key)?;
+        }
+        (MerkleSignatureTag::ED25519, MerkleDigestTag::BLAKE2B_256) => {
+          merkle_key_verify::<X, Blake2b256, Ed25519, U>(data, method, &public_key)?;
+        }
+        (_, _) => {
+          return Err(Error::InvalidMethodType);
+        }
+      },
+    }
+
+    Ok(())
+  }
+}
+
+fn merkle_key_verify<X, D, S, U>(that: &X, method: &VerificationMethod<U>, data: &[u8]) -> Result<()>
+where
+  X: Serialize + TrySignature,
+  D: MerkleDigest,
+  S: MerkleSignature + Verify<Public = [u8]>,
+  U: Revocation,
+{
+  let revocation: Option<BitSet> = method.revocation()?;
+  let mut vkey: VerificationKey<'_> = VerificationKey::from_borrowed(data);
+
+  if let Some(revocation) = revocation.as_ref() {
+    vkey.set_revocation(revocation);
+  }
+
+  MerkleVerifier::<D, S>::verify_signature(that, &vkey)?;
+
+  Ok(())
+}
+
 // =============================================================================
 // Signature Extensions
 // =============================================================================
@@ -574,12 +718,6 @@ impl<T, U, V> CoreDocument<T, U, V> {
   /// signatures from verification methods in this DID Document.
   pub fn signer<'base>(&'base self, private: &'base PrivateKey) -> DocumentSigner<'base, '_, '_, T, U, V> {
     DocumentSigner::new(self, private)
-  }
-
-  /// Creates a new [`DocumentVerifier`] that can be used to verify signatures
-  /// created with this DID Document.
-  pub fn verifier(&self) -> DocumentVerifier<'_, T, U, V> {
-    DocumentVerifier::new(self)
   }
 }
 
@@ -603,6 +741,7 @@ mod tests {
   use crate::did::CoreDID;
   use crate::did::DID;
   use crate::document::CoreDocument;
+  use crate::utils::Queryable;
   use crate::verification::MethodData;
   use crate::verification::MethodRelationship;
   use crate::verification::MethodScope;
