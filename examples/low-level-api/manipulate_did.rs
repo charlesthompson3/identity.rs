@@ -12,8 +12,8 @@ use identity::core::Timestamp;
 use identity::did::MethodScope;
 use identity::did::Service;
 use identity::did::DID;
-use identity::iota::ClientMap;
 use identity::iota::ExplorerUrl;
+use identity::iota::IotaService;
 use identity::iota::IotaVerificationMethod;
 use identity::iota::Receipt;
 use identity::prelude::*;
@@ -22,7 +22,7 @@ mod create_did;
 
 pub async fn run() -> Result<(IotaDocument, KeyPair, KeyPair, Receipt, Receipt)> {
   // Create a client instance to send messages to the Tangle.
-  let client: ClientMap = ClientMap::new();
+  let client: Client = Client::new().await?;
 
   // Create a signed DID Document and KeyPair (see create_did.rs).
   let (mut document, keypair, receipt): (IotaDocument, KeyPair, Receipt) = create_did::run().await?;
@@ -30,11 +30,11 @@ pub async fn run() -> Result<(IotaDocument, KeyPair, KeyPair, Receipt, Receipt)>
   // Add a new VerificationMethod with a new keypair
   let new_key: KeyPair = KeyPair::new_ed25519()?;
   let method: IotaVerificationMethod =
-    IotaVerificationMethod::from_did(document.id().clone(), new_key.type_(), new_key.public(), "newKey")?;
+    IotaVerificationMethod::new(document.id().clone(), new_key.type_(), new_key.public(), "newKey")?;
   assert!(document.insert_method(method, MethodScope::VerificationMethod).is_ok());
 
   // Add a new Service
-  let service: Service = Service::from_json_value(json!({
+  let service: IotaService = Service::from_json_value(json!({
     "id": document.id().to_url().join("#linked-domain")?,
     "type": "LinkedDomains",
     "serviceEndpoint": "https://iota.org"
@@ -48,7 +48,7 @@ pub async fn run() -> Result<(IotaDocument, KeyPair, KeyPair, Receipt, Receipt)>
   document.metadata.updated = Timestamp::now_utc();
 
   // Sign the DID Document with the original private key.
-  document.sign_self(keypair.private(), &document.default_signing_method()?.id())?;
+  document.sign_self(keypair.private(), document.default_signing_method()?.id().clone())?;
 
   // Publish the updated DID Document to the Tangle.
   let update_receipt: Receipt = client.publish_document(&document).await?;

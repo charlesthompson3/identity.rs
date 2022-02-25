@@ -141,7 +141,7 @@ fn test_document_sign_self() {
         &JsValue::from(document.default_signing_method().unwrap().id()).unchecked_into(),
       )
       .unwrap();
-    assert!(WasmDocument::verify_document(&document, &document).is_ok());
+    assert!(document.verify_document(&document).is_ok());
   }
 
   // Sign with string method query.
@@ -153,7 +153,7 @@ fn test_document_sign_self() {
         &JsValue::from_str(&document.default_signing_method().unwrap().id().to_string()).unchecked_into(),
       )
       .unwrap();
-    assert!(WasmDocument::verify_document(&document, &document).is_ok());
+    assert!(document.verify_document(&document).is_ok());
   }
 }
 
@@ -162,10 +162,17 @@ fn test_document_resolve_method() {
   let keypair: KeyPair = KeyPair::new(KeyType::Ed25519).unwrap();
   let mut document: WasmDocument = WasmDocument::new(&keypair, None, None).unwrap();
   let default_method: WasmVerificationMethod = document.default_signing_method().unwrap();
-  let new_method: WasmVerificationMethod =
-    WasmVerificationMethod::new(&KeyPair::new(KeyType::Ed25519).unwrap(), "new-key").unwrap();
+
+  let keypair_new: KeyPair = KeyPair::new(KeyType::Ed25519).unwrap();
+  let method_new: WasmVerificationMethod = WasmVerificationMethod::new(
+    &document.id(),
+    KeyType::Ed25519,
+    keypair_new.public(),
+    "new-key".to_owned(),
+  )
+  .unwrap();
   document
-    .insert_method(&new_method, WasmMethodScope::authentication())
+    .insert_method(&method_new, WasmMethodScope::authentication())
     .unwrap();
 
   // Resolve with DIDUrl method query.
@@ -179,11 +186,11 @@ fn test_document_resolve_method() {
   );
   assert_eq!(
     document
-      .resolve_method(&JsValue::from(new_method.id()).unchecked_into())
+      .resolve_method(&JsValue::from(method_new.id()).unchecked_into())
       .unwrap()
       .id()
       .to_string(),
-    new_method.id().to_string()
+    method_new.id().to_string()
   );
 
   // Resolve with string method query.
@@ -197,11 +204,11 @@ fn test_document_resolve_method() {
   );
   assert_eq!(
     document
-      .resolve_method(&JsValue::from_str(&new_method.id().to_string()).unchecked_into())
+      .resolve_method(&JsValue::from_str(&method_new.id().to_string()).unchecked_into())
       .unwrap()
       .id()
       .to_string(),
-    new_method.id().to_string()
+    method_new.id().to_string()
   );
 
   // Resolve with string fragment method query.
@@ -215,11 +222,11 @@ fn test_document_resolve_method() {
   );
   assert_eq!(
     document
-      .resolve_method(&JsValue::from_str(&new_method.id().fragment().unwrap()).unchecked_into())
+      .resolve_method(&JsValue::from_str(&method_new.id().fragment().unwrap()).unchecked_into())
       .unwrap()
       .id()
       .to_string(),
-    new_method.id().to_string()
+    method_new.id().to_string()
   );
 }
 
@@ -250,4 +257,38 @@ fn test_did_serde() {
     let de: IotaDID = js_string.into_serde().unwrap();
     assert_eq!(de, expected);
   }
+}
+
+#[wasm_bindgen_test]
+fn test_sign_document() {
+  let keypair1: KeyPair = KeyPair::new(KeyType::Ed25519).unwrap();
+  let document1: WasmDocument = WasmDocument::new(&keypair1, None, None).unwrap();
+
+  // Replace the default signing method.
+  let mut document2: WasmDocument = document1.clone();
+  let keypair2: KeyPair = KeyPair::new(KeyType::Ed25519).unwrap();
+  let method: WasmVerificationMethod = WasmVerificationMethod::new(
+    &document2.id(),
+    keypair2.type_(),
+    keypair2.public(),
+    "#method-2".to_owned(),
+  )
+  .unwrap();
+  document2
+    .insert_method(&method, WasmMethodScope::capability_invocation())
+    .unwrap();
+  document2
+    .remove_method(document1.default_signing_method().unwrap().id())
+    .unwrap();
+
+  // Sign update using original document.
+  assert!(document1.verify_document(&document2).is_err());
+  document1
+    .sign_document(
+      &mut document2,
+      &keypair1,
+      &JsValue::from(document1.default_signing_method().unwrap().id()).unchecked_into(),
+    )
+    .unwrap();
+  document1.verify_document(&document2).unwrap();
 }

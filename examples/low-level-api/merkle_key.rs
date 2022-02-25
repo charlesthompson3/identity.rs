@@ -18,7 +18,6 @@ use identity::crypto::PrivateKey;
 use identity::crypto::PublicKey;
 use identity::did::verifiable::VerifierOptions;
 use identity::did::MethodScope;
-use identity::iota::ClientMap;
 use identity::iota::CredentialValidation;
 use identity::iota::CredentialValidator;
 use identity::iota::IotaDID;
@@ -32,7 +31,7 @@ mod create_did;
 #[tokio::main]
 async fn main() -> Result<()> {
   // Create a client instance to send messages to the Tangle.
-  let client: ClientMap = ClientMap::new();
+  let client: Client = Client::new().await?;
 
   // Create a signed DID Document/KeyPair for the credential issuer (see create_did.rs).
   let (mut issuer_doc, issuer_key, issuer_receipt): (IotaDocument, KeyPair, Receipt) = create_did::run().await?;
@@ -43,13 +42,13 @@ async fn main() -> Result<()> {
   // Generate a Merkle Key Collection Verification Method with 8 keys (Must be a power of 2)
   let keys: KeyCollection = KeyCollection::new_ed25519(8)?;
   let method_did: IotaDID = issuer_doc.id().clone();
-  let method = IotaVerificationMethod::create_merkle_key::<Sha256>(method_did, &keys, "merkle-key")?;
+  let method = IotaVerificationMethod::new_merkle_key::<Sha256>(method_did, &keys, "merkle-key")?;
 
   // Add to the DID Document as a general-purpose verification method
   issuer_doc.insert_method(method, MethodScope::VerificationMethod)?;
   issuer_doc.metadata.previous_message_id = *issuer_receipt.message_id();
   issuer_doc.metadata.updated = Timestamp::now_utc();
-  issuer_doc.sign_self(issuer_key.private(), &issuer_doc.default_signing_method()?.id())?;
+  issuer_doc.sign_self(issuer_key.private(), issuer_doc.default_signing_method()?.id().clone())?;
 
   // Publish the Identity to the IOTA Network and log the results.
   // This may take a few seconds to complete proof-of-work.
@@ -80,7 +79,7 @@ async fn main() -> Result<()> {
   let credential_json: String = credential.to_json()?;
 
   // Check the verifiable credential is valid
-  let validator: CredentialValidator<ClientMap> = CredentialValidator::new(&client);
+  let validator: CredentialValidator<Client> = CredentialValidator::new(&client);
   let validation: CredentialValidation = validator
     .check_credential(&credential_json, VerifierOptions::default())
     .await?;
@@ -90,12 +89,11 @@ async fn main() -> Result<()> {
 
   // The Issuer would like to revoke the credential (and therefore revokes key at `index`)
   issuer_doc
-    .try_resolve_method_mut("merkle-key")
-    .and_then(IotaVerificationMethod::try_from_mut)?
-    .revoke_merkle_key(index)?;
+    .try_resolve_method_mut("merkle-key")?
+    .revoke_merkle_key(index as u32)?;
   issuer_doc.metadata.previous_message_id = *receipt.message_id();
   issuer_doc.metadata.updated = Timestamp::now_utc();
-  issuer_doc.sign_self(issuer_key.private(), &issuer_doc.default_signing_method()?.id())?;
+  issuer_doc.sign_self(issuer_key.private(), issuer_doc.default_signing_method()?.id().clone())?;
 
   let receipt: Receipt = client.publish_document(&issuer_doc).await?;
 

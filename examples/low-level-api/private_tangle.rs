@@ -37,7 +37,7 @@ pub async fn main() -> Result<()> {
   // Use DIDMessageEncoding::Json instead to publish plaintext messages to the Tangle for debugging.
   let encoding = DIDMessageEncoding::JsonBrotli;
 
-  let client = ClientBuilder::new()
+  let client: Client = ClientBuilder::new()
     .network(network.clone())
     .encoding(encoding)
     .primary_node(private_node_url, None, None)?
@@ -51,7 +51,7 @@ pub async fn main() -> Result<()> {
   let mut document: IotaDocument = IotaDocument::new_with_options(&keypair, Some(client.network().name()), None)?;
 
   // Sign the DID Document with the default signing method.
-  document.sign_self(keypair.private(), &document.default_signing_method()?.id())?;
+  document.sign_self(keypair.private(), document.default_signing_method()?.id().clone())?;
 
   // Publish the DID Document to the Tangle.
   let receipt: Receipt = match client.publish_document(&document).await {
