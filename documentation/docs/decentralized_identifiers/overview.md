@@ -39,9 +39,9 @@ The purpose of a DID is to help navigate to a DID Document, which is a document 
 
 The identifier contains all information to resolve a DID, providing the latest DID Document. The first three characters `did` indicate that the DID standard from W3C must be used to resolve the identifier. It is followed by a unique method name, in our case `iota`, to indicate that the IOTA method is used. The IOTA method is a specific implementation that follows the following [method spec](https://wiki.iota.org/identity.rs/specs/did/iota_did_method_spec). This provides unique rules for the protocol to follow to result in the latest DID Document. In our case, it describes how DID Documents are uploaded and queried to and from the IOTA Tangle. Lastly, a DID contains a set of random characters that are unique per identity, making the identity unique and ensuring every identity resolves to a unique DID Document. 
 
-:::note Requires basic knowledge of Asymmetric Encryption
+:::note Requires basic knowledge of asymmetric encryption
 
-The following and later sections require some basic knowledge of Asymmetric Encryption. Please read or view some materials on the subject before continuing.
+The following and later sections require some basic knowledge of asymmetric encryption.
 
 :::
 
